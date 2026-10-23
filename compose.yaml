@@ -1,0 +1,56 @@
+name: notification-api
+x-app: &app
+  image: notification-api:local
+  build: .
+  environment: &environment
+    API_KEY: ${API_KEY:?Copy .env.example to .env first}
+    DATABASE_URL: postgresql+psycopg://notifications:${POSTGRES_PASSWORD:?Set database password}@db:5432/notifications
+    DELIVERY_MODE: ${DELIVERY_MODE:-mock}
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    TELEGRAM_DESTINATIONS: '${TELEGRAM_DESTINATIONS:-{"demo":"0"}}'
+    MAX_ATTEMPTS: ${MAX_ATTEMPTS:-4}
+    RETRY_BASE_SECONDS: ${RETRY_BASE_SECONDS:-5}
+    POLL_SECONDS: ${POLL_SECONDS:-1}
+  init: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: [/tmp]
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: notifications
+      POSTGRES_DB: notifications
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set database password}
+    ports: ["127.0.0.1:5409:5432"]
+    volumes: ["notification-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U notifications -d notifications"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *app
+    command: [alembic, upgrade, head]
+    depends_on:
+      db: {condition: service_healthy}
+  api:
+    <<: *app
+    ports: ["127.0.0.1:8009:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  worker:
+    <<: *app
+    command: [python, -m, notification_api.worker]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+volumes:
+  notification-data:
